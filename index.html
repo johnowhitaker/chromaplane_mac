@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Chromaplane — Mac Touchpad POC</title>
+<style>
+  :root {
+    --bg: #0b0f12;
+    --panel: #141b20;
+    --accent: #58a6ff;
+    --text: #e6edf3;
+    --muted: #9da7b3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 320px; gap: 0; height:100%; }
+  #stage { background: radial-gradient(1200px 900px at 60% 30%, #121821, #0b0f12 60%); width:100%; height:100%; display:flex; align-items:center; justify-content:center; position:relative; }
+  canvas { width:100%; height:100%; max-height:100%; display:block; }
+  .panel { background: var(--panel); border-left: 1px solid #1d2630; padding: 14px 14px 18px; overflow:auto; }
+  h1 { font-size: 16px; margin: 0 0 10px; font-weight: 600; letter-spacing: .3px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+  .row { display: grid; grid-template-columns: 1fr 80px; gap: 8px; align-items:center; margin-bottom: 6px; }
+  .row > label { font-size: 13px; color: var(--text); }
+  input[type="range"] { width:100%; }
+  select, button, input[type="range"] { accent-color: var(--accent); }
+  select, button, .chip { background: #0f141a; color: var(--text); border:1px solid #223040; border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+  button { cursor:pointer; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .overlay {
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    background: rgba(10,14,18,.7); backdrop-filter: blur(4px);
+  }
+  .overlay .card {
+    background: #0f141a; border:1px solid #243244; border-radius: 12px; padding: 18px 20px; text-align:center; max-width: 360px;
+  }
+  .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:#0b0f12; border:1px solid #2a3644; padding:2px 6px; border-radius:6px; font-size:12px; }
+  .flex { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
+  .hide { display:none !important; }
+  .small { font-size: 12px; }
+  .chip { display:inline-flex; align-items:center; gap:6px; }
+  .right { text-align:right; }
+</style>
+</head>
+<body>
+  <div class="app">
+    <div id="stage">
+      <canvas id="cnv"></canvas>
+      <div id="gate" class="overlay">
+        <div class="card">
+          <h2 style="margin:0 0 8px;text-transform:none;color:var(--text);font-size:16px;">Chromaplane (Mac Trackpad POC)</h2>
+          <p class="muted" style="margin:0 0 12px;">Click to start the audio engine. Hover the cursor over the hexes. In Safari, press harder on the trackpad to get louder. Else, use the volume slider.</p>
+          <div class="flex" style="justify-content:center;">
+            <button id="startBtn">Start Audio</button>
+            <button id="demoBtn" class="muted">Demo Drone</button>
+          </div>
+          <p class="muted small" style="margin-top:10px;">Shortcuts: <span class="kbd">F</span> filter, <span class="kbd">E</span> delay, <span class="kbd">[</span>/<span class="kbd">]</span> volume (fallback), <span class="kbd">C</span> calibrate force</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h1>Controls</h1>
+
+      <h2>Master</h2>
+      <div id="fallbackVolumeRow" class="row">
+        <label>Volume (fallback)</label>
+        <input id="vol" type="range" min="0" max="1" step="0.001" value="0.6" />
+      </div>
+      <div class="row">
+        <label>Response Curve</label>
+        <input id="curve" type="range" min="0.8" max="1.3" step="0.01" value="1.0" />
+      </div>
+
+      <h2>Tuning</h2>
+      <div class="row">
+        <label>Root</label>
+        <select id="root">
+          <!-- A4=440 (MIDI 69) default -->
+        </select>
+      </div>
+      <div class="row">
+        <label>Waveform</label>
+        <select id="wavef">
+          <option value="sine">Sine (pure)</option>
+          <option value="triangle" selected>Triangle (richer)</option>
+          <option value="sawtooth">Sawtooth (bright)</option>
+        </select>
+      </div>
+
+      <h2>Blend</h2>
+      <div class="row">
+        <label>Sigma</label>
+        <input id="sigma" type="range" min="10" max="240" value="120" />
+      </div>
+      <div class="row">
+        <label>Gamma</label>
+        <input id="gamma" type="range" min="0.7" max="1.5" step="0.01" value="1.0" />
+      </div>
+      <div class="row">
+        <label>Snap Boost</label>
+        <input id="snap" type="range" min="1.0" max="2.0" step="0.01" value="1.4" />
+      </div>
+
+      <h2>Filter <span id="filterOnChip" class="chip" style="float:right;"><input id="filtToggle" type="checkbox" checked /> On</span></h2>
+      <div class="row">
+        <label>Cutoff</label>
+        <input id="cutoff" type="range" min="40" max="10000" value="2500" />
+      </div>
+      <div class="row">
+        <label>Resonance (Q)</label>
+        <input id="q" type="range" min="0.5" max="12" step="0.1" value="0.8" />
+      </div>
+      <div class="row">
+        <label>Drive (dB)</label>
+        <input id="drive" type="range" min="0" max="24" step="0.5" value="6" />
+      </div>
+
+      <h2>Delay <span id="delayOnChip" class="chip" style="float:right;"><input id="delayToggle" type="checkbox" checked /> On</span></h2>
+      <div class="row">
+        <label>Time (ms)</label>
+        <input id="dtime" type="range" min="0" max="800" step="1" value="260" />
+      </div>
+      <div class="row">
+        <label>Feedback</label>
+        <input id="dfeed" type="range" min="0" max="0.9" step="0.01" value="0.44" />
+      </div>
+      <div class="row">
+        <label>Delay Tone</label>
+        <input id="dtone" type="range" min="200" max="10000" step="1" value="3000" />
+      </div>
+      <div class="row">
+        <label>Mix</label>
+        <input id="dmix" type="range" min="0" max="1" step="0.01" value="0.25" />
+      </div>
+
+      <h2>Pressure</h2>
+      <div class="flex">
+        <button id="calSoft">Calibrate Soft</button>
+        <button id="calHard">Calibrate Hard</button>
+        <span class="muted small" id="pReadout">pressure: 0.00</span>
+      </div>
+      <p class="muted small" id="pressureHint" style="margin-top:6px;">Safari Force Touch recommended. Fallback volume slider is shown if pressure isn’t available.</p>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---------- Geometry & layout ----------
+  const cnv = document.getElementById('cnv');
+  const ctx2d = cnv.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0;
+  function resize() {
+    const rect = cnv.getBoundingClientRect();
+    W = Math.floor(rect.width * devicePixelRatio);
+    H = Math.floor(rect.height * devicePixelRatio);
+    cnv.width = W; cnv.height = H;
+    draw(); // redraw
+  }
+  new ResizeObserver(resize).observe(cnv);
+
+  // Hex layout for 3-4-3
+  const grid = [];
+  let R = 90; // hex radius in px at DPR=1 (will be scaled with DPR)
+  const rows = [
+    { n: 3, y: -1 },
+    { n: 4, y:  0 },
+    { n: 3, y: +1 }
+  ];
+
+  function computeGrid() {
+    grid.length = 0;
+    const dpr = devicePixelRatio || 1;
+    const r = R * dpr;
+    const hexW = Math.sqrt(3) * r;
+    const hexH = 2 * r;
+    const vstep = 0.75 * hexH; // vertical spacing for pointy-topped hexes
+    const centerX = W * 0.5;
+    const centerY = H * 0.5;
+
+    rows.forEach((row, ri) => {
+      const y = centerY + row.y * vstep;
+      const count = row.n;
+      const totalW = (count - 1) * hexW + ((row.n === 4) ? hexW : 0);
+      const x0 = centerX - totalW * 0.5 + ((row.n === 4) ? 0 : 0.5 * hexW);
+      for (let i = 0; i < count; i++) {
+        const x = x0 + i * hexW;
+        grid.push({ x, y });
+      }
+    });
+  }
+
+  // ---------- Audio ----------
+  let AC, now, master, mixBus, perOsc = [], perGain = [];
+  let preDrive, shaper;
+  let filter1, filter2, filtOn = true;
+  let delay, dFeed, dTone, delayMix, delaySend, delayOn = true;
+
+  const NODES = 10;
+  const semitoneMap = [
+    // Row order: 3,4,3 (top to bottom). Values = semitone offset from root.
+    -2, 0, +2,
+    -5, -3, -1, +1,
+    -9, -7, -5
+  ];
+  let rootMidi = 69; // A4
+  const A4 = 440;
+  const midi2freq = (midi) => 440 * Math.pow(2, (midi - 69) / 12);
+  const noteFromOffset = (offset) => midi2freq(rootMidi + offset);
+
+  const state = {
+    pointerX: null, pointerY: null,
+    pressure: 0.6, // fallback default
+    curve: 1.0,
+    sigmaPx: 120,  // UI control; converted by DPR
+    gamma: 1.0,
+    snapBoost: 1.4,
+    envTC: 0.035, // seconds timeConstant for setTargetAtTime
+    hoverSnapR: 0.35, // of hex radius
+    pressureSupported: false,
+    forceMin: 0.1,
+    forceMax: 3.0,
+    waveform: 'triangle',
+    driveDb: 6,
+  };
+
+  function makeDriveCurve(k = 0) {
+    // k=0 -> linear
+    const n = 1024;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1; // -1..1
+      if (k === 0) {
+        curve[i] = x;
+      } else {
+        // arctangent soft clip / overdrive
+        const kk = k;
+        curve[i] = (1 + kk) * x / (1 + kk * Math.abs(x));
+      }
+    }
+    return curve;
+  }
+
+  function updateDriveState() {
+    if (!AC || !preDrive || !shaper) return;
+    const activeDriveDb = filtOn ? state.driveDb : 0; // bypass drive when filter is "off"
+    const pregain = Math.pow(10, activeDriveDb / 20);
+    preDrive.gain.setTargetAtTime(pregain, AC.currentTime, 0.02);
+    const k = activeDriveDb > 0 ? activeDriveDb * 2 : 0; // map dB to curve intensity
+    shaper.curve = makeDriveCurve(k);
+  }
+
+  function buildAudio() {
+    AC = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+
+  // Master
+  master = AC.createGain(); master.gain.value = 1.0;
+    const limiter = AC.createDynamicsCompressor(); // subtle safety
+    limiter.threshold.value = -6; limiter.knee.value = 12; limiter.ratio.value = 4; limiter.attack.value = 0.003; limiter.release.value = 0.15;
+    master.connect(limiter).connect(AC.destination);
+
+    // Mix bus (sum of per-osc gains)
+    mixBus = AC.createGain(); mixBus.gain.value = 1.0;
+
+  // Pre-filter drive: pregain -> waveshaper
+  preDrive = AC.createGain(); preDrive.gain.value = 1.0;
+  shaper = AC.createWaveShaper(); shaper.curve = makeDriveCurve(0);
+
+  // Filter (4-pole-ish by cascading two biquads) after drive
+    filter1 = AC.createBiquadFilter(); filter1.type = 'lowpass'; filter1.frequency.value = 2500; filter1.Q.value = 0.8;
+    filter2 = AC.createBiquadFilter(); filter2.type = 'lowpass'; filter2.frequency.value = 2500; filter2.Q.value = 0.8;
+
+    // Delay bus
+    delay = AC.createDelay(0.8); delay.delayTime.value = 0.26;
+    dFeed = AC.createGain(); dFeed.gain.value = 0.44;
+    dTone = AC.createBiquadFilter(); dTone.type = 'lowpass'; dTone.frequency.value = 3000;
+    delayMix = AC.createGain(); delayMix.gain.value = 0.25;
+    delaySend = AC.createGain(); delaySend.gain.value = 0.6;
+
+    // Feedback loop: delay -> feedback -> tone -> delay
+    delay.connect(dFeed).connect(dTone).connect(delay);
+    // Delay output to mix
+    delay.connect(delayMix);
+
+  // Wire main path
+  // per-osc gains -> mixBus -> preDrive -> shaper -> filter1 -> filter2
+    // Parallel: filter2 -> delaySend -> delay
+    // Then: filter2 -> master; delayMix -> master
+  mixBus.connect(preDrive); preDrive.connect(shaper); shaper.connect(filter1); filter1.connect(filter2);
+    filter2.connect(master);
+    filter2.connect(delaySend); delaySend.connect(delay);
+    delayMix.connect(master);
+
+    // Create oscillators
+    perOsc = []; perGain = [];
+    for (let i = 0; i < NODES; i++) {
+      const osc = AC.createOscillator();
+      osc.type = state.waveform;
+      const gain = AC.createGain(); gain.gain.value = 0.0;
+      const freq = noteFromOffset(semitoneMap[i]);
+      osc.frequency.setValueAtTime(freq, AC.currentTime);
+      osc.connect(gain).connect(mixBus);
+      osc.start();
+      perOsc.push(osc);
+      perGain.push(gain);
+    }
+
+    // Apply initial drive settings
+    updateDriveState();
+  }
+
+  // ---------- UI wiring ----------
+  const gate = document.getElementById('gate');
+  document.getElementById('startBtn').addEventListener('click', async () => {
+    if (!AC) buildAudio();
+    await AC.resume();
+    gate.classList.add('hide');
+  });
+  document.getElementById('demoBtn').addEventListener('click', () => {
+    // Drop a static gain to hear something pre-pointer
+    if (!AC) buildAudio();
+    AC.resume();
+    gate.classList.add('hide');
+    state.pointerX = W * 0.5; state.pointerY = H * 0.5;
+    state.pressure = 0.7;
+  });
+
+  // Controls
+  const $ = id => document.getElementById(id);
+  const vol = $('vol'), curve = $('curve'), rootSel = $('root'),
+        sigma = $('sigma'), gamma = $('gamma'), snap = $('snap'),
+        cutoff = $('cutoff'), q = $('q'), filtToggle = $('filtToggle'),
+        dtime = $('dtime'), dfeed = $('dfeed'), dtone = $('dtone'), dmix = $('dmix'), delayToggle = $('delayToggle'),
+        pressureHint = $('pressureHint'), pReadout = $('pReadout'), fallbackVolumeRow = $('fallbackVolumeRow'),
+        calSoft = $('calSoft'), calHard = $('calHard'),
+        wavef = $('wavef'), drive = $('drive');
+
+  vol.addEventListener('input', () => { if (!state.pressureSupported) state.pressure = parseFloat(vol.value); });
+  curve.addEventListener('input', () => state.curve = parseFloat(curve.value));
+  sigma.addEventListener('input', () => state.sigmaPx = parseFloat(sigma.value));
+  gamma.addEventListener('input', () => state.gamma = parseFloat(gamma.value));
+  snap.addEventListener('input', () => state.snapBoost = parseFloat(snap.value));
+
+  cutoff.addEventListener('input', () => {
+    if (!AC) return;
+    const v = parseFloat(cutoff.value);
+    const t = AC.currentTime + 0.03;
+    filter1.frequency.linearRampToValueAtTime(v, t);
+    filter2.frequency.linearRampToValueAtTime(v, t);
+  });
+  q.addEventListener('input', () => {
+    if (!AC) return;
+    const v = parseFloat(q.value);
+    const t = AC.currentTime + 0.03;
+    filter1.Q.linearRampToValueAtTime(v, t);
+    filter2.Q.linearRampToValueAtTime(v, t);
+  });
+  filtToggle.addEventListener('change', () => {
+    if (!AC) return;
+    filtOn = filtToggle.checked;
+    // Bypass by setting cutoff high and low Q (simple/cheap in POC)
+    const on = filtOn;
+    const cf = on ? parseFloat(cutoff.value) : 18000;
+    const qv = on ? parseFloat(q.value) : 0.0001;
+    filter1.frequency.setTargetAtTime(cf, AC.currentTime, 0.02);
+    filter2.frequency.setTargetAtTime(cf, AC.currentTime, 0.02);
+    filter1.Q.setTargetAtTime(qv, AC.currentTime, 0.02);
+    filter2.Q.setTargetAtTime(qv, AC.currentTime, 0.02);
+  updateDriveState();
+  });
+
+  dtime.addEventListener('input', () => { if (AC) delay.delayTime.setTargetAtTime(parseFloat(dtime.value)/1000, AC.currentTime, 0.02); });
+  dfeed.addEventListener('input', () => { if (AC) dFeed.gain.setTargetAtTime(parseFloat(dfeed.value), AC.currentTime, 0.02); });
+  dtone.addEventListener('input', () => { if (AC) dTone.frequency.setTargetAtTime(parseFloat(dtone.value), AC.currentTime, 0.02); });
+  dmix.addEventListener('input',  () => { if (AC) delayMix.gain.setTargetAtTime(parseFloat(dmix.value), AC.currentTime, 0.02); });
+
+  delayToggle.addEventListener('change', () => {
+    if (!AC) return;
+    delayOn = delayToggle.checked;
+    const mix = delayOn ? parseFloat(dmix.value) : 0.0;
+    delayMix.gain.setTargetAtTime(mix, AC.currentTime, 0.02);
+    delaySend.gain.setTargetAtTime(delayOn ? 0.6 : 0.0, AC.currentTime, 0.02);
+  });
+
+  // Root note list (C2..B6)
+  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  for (let midi = 36; midi <= 95; midi++) {
+    const name = names[midi % 12] + Math.floor(midi/12 - 1);
+    const opt = document.createElement('option');
+    opt.value = String(midi); opt.textContent = name + (midi===69?' (A4=440)':'');
+    if (midi === 69) opt.selected = true;
+    rootSel.appendChild(opt);
+  }
+  rootSel.addEventListener('change', () => {
+    rootMidi = parseInt(rootSel.value, 10);
+    if (!AC) return;
+    const t = AC.currentTime;
+    for (let i = 0; i < NODES; i++) {
+      perOsc[i].frequency.setTargetAtTime(noteFromOffset(semitoneMap[i]), t, 0.02);
+    }
+  });
+
+  // Waveform selector
+  wavef.addEventListener('change', () => {
+    state.waveform = wavef.value;
+    if (!AC) return;
+    for (let i = 0; i < NODES; i++) {
+      try { perOsc[i].type = state.waveform; } catch(_){}
+    }
+  });
+
+  // Drive control
+  drive.addEventListener('input', () => {
+    state.driveDb = parseFloat(drive.value);
+    updateDriveState();
+  });
+
+  // ---------- Pointer & pressure ----------
+  function setPointerFromEvent(e) {
+    const rect = cnv.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * devicePixelRatio;
+    const y = (e.clientY - rect.top)  * devicePixelRatio;
+    state.pointerX = x; state.pointerY = y;
+  }
+  function onPointerMove(e) {
+    setPointerFromEvent(e);
+    if (typeof e.pressure === 'number' && e.pressure >= 0 && e.pressure <= 1) {
+      // Some browsers/devices provide normalized pressure
+      state.pressureSupported = state.pressureSupported || (e.pressure > 0 && e.pressure !== 0.5);
+      if (state.pressureSupported) {
+        state.pressure = e.pressure;
+        vol.value = String(state.pressure); // mirror to slider so you can see it move
+      }
+    }
+  }
+  cnv.addEventListener('pointerdown', (e) => { cnv.setPointerCapture(e.pointerId); onPointerMove(e); });
+  cnv.addEventListener('pointermove', onPointerMove);
+  cnv.addEventListener('pointerup',  (e) => { cnv.releasePointerCapture(e.pointerId); });
+
+  // Safari Force Touch (webkit) — fires even if pointer events don’t report pressure
+  cnv.addEventListener('webkitmouseforcechanged', (e) => {
+    const f = e.webkitForce ?? 0;
+    const p = (f - state.forceMin) / Math.max(0.0001, (state.forceMax - state.forceMin));
+    state.pressure = Math.max(0, Math.min(1, p));
+    state.pressureSupported = true;
+    vol.value = String(state.pressure);
+    pReadout.textContent = `pressure: ${state.pressure.toFixed(2)}`;
+    setPointerFromEvent(e);
+  });
+  cnv.addEventListener('mousemove', (e) => {
+    // Keep pointer tracking for Safari if pointer events aren't firing pressure reliably
+    setPointerFromEvent(e);
+  });
+
+  // Calibration
+  calSoft.addEventListener('click', () => { state.forceMin = Math.min(state.forceMin, state._lastRawForce ?? 0.1); });
+  calHard.addEventListener('click', () => { state.forceMax = Math.max(state.forceMax, state._lastRawForce ?? 3.0); });
+
+  // Track raw force for calibration (Safari provides on the same event)
+  cnv.addEventListener('webkitmouseforcechanged', (e) => { state._lastRawForce = e.webkitForce ?? 0; });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') { filtToggle.click(); }
+    else if (e.key === 'e' || e.key === 'E') { delayToggle.click(); }
+    else if (e.key === '[') { if (!state.pressureSupported) { state.pressure = Math.max(0, state.pressure - 0.02); vol.value = String(state.pressure);} }
+    else if (e.key === ']') { if (!state.pressureSupported) { state.pressure = Math.min(1, state.pressure + 0.02); vol.value = String(state.pressure);} }
+    else if (e.key === 'c' || e.key === 'C') { state.forceMin = 0.1; state.forceMax = 3.0; }
+  });
+
+  // Show/hide fallback volume row depending on pressure support
+  setInterval(() => {
+    fallbackVolumeRow.classList.toggle('hide', state.pressureSupported);
+    pressureHint.textContent = state.pressureSupported
+        ? 'Pressure active (Safari Force Touch or Pointer pressure).'
+        : 'Pressure not available. Using volume slider.';
+    pReadout.textContent = `pressure: ${state.pressure.toFixed(2)}`;
+  }, 150);
+
+  // ---------- Synthesis update ----------
+  function weightsForPointer() {
+    const res = new Array(NODES).fill(0);
+    if (state.pointerX == null || state.pointerY == null) return res;
+
+    const dpr = devicePixelRatio || 1;
+    const r = R * dpr;
+    const sigma = state.sigmaPx * dpr;
+    const twoSigma2 = 2 * sigma * sigma;
+
+    let sum = 0, minIdx = -1, minD = 1e9;
+    for (let i = 0; i < NODES; i++) {
+      const dx = state.pointerX - grid[i].x;
+      const dy = state.pointerY - grid[i].y;
+      const d2 = dx*dx + dy*dy;
+      const w = Math.exp(-d2 / twoSigma2);
+      res[i] = w;
+      sum += w;
+      const d = Math.sqrt(d2);
+      if (d < minD) { minD = d; minIdx = i; }
+    }
+
+    // Normalize + gamma
+    if (sum > 0) {
+      for (let i = 0; i < NODES; i++) res[i] = Math.pow(res[i] / sum, state.gamma);
+    }
+
+    // Snap boost when inside hover radius
+    if (minIdx >= 0 && minD < (state.hoverSnapR * R * (devicePixelRatio||1))) {
+      res[minIdx] *= state.snapBoost;
+    }
+
+    // Renormalize after snap
+    let total = 0; for (let v of res) total += v;
+    if (total > 0) for (let i = 0; i < NODES; i++) res[i] /= total;
+
+    return res;
+  }
+
+  function updateAudio() {
+    if (!AC) return;
+    const t = AC.currentTime;
+    const weights = weightsForPointer();
+    const masterVol = Math.pow(state.pressure, state.curve);
+    // Smooth per-oscillator gains
+    for (let i = 0; i < NODES; i++) {
+      const target = weights[i] * masterVol; // apply pressure per-voice; delay return unaffected
+      perGain[i].gain.setTargetAtTime(target, t, state.envTC);
+    }
+  }
+
+  // ---------- Drawing ----------
+  function draw() {
+    if (!ctx2d) return;
+    ctx2d.clearRect(0,0,W,H);
+
+    // Background subtle grid dots
+    // (kept simple for POC; main focus is nodes)
+    // Draw nodes
+    const dpr = devicePixelRatio || 1;
+    const r = R * dpr;
+    const weights = weightsForPointer();
+
+    for (let i = 0; i < NODES; i++) {
+      const {x,y} = grid[i];
+      const w = weights[i] || 0;
+      const glow = Math.min(1, Math.pow(w, 0.6) * 1.4);
+
+      // Outer ring
+      ctx2d.beginPath();
+      ctx2d.arc(x, y, r*0.95, 0, Math.PI*2);
+      ctx2d.strokeStyle = `rgba(120, 160, 220, ${0.2 + 0.5*glow})`;
+      ctx2d.lineWidth = Math.max(1, 2*dpr);
+      ctx2d.stroke();
+
+      // Fill glow
+      const grd = ctx2d.createRadialGradient(x, y, 0, x, y, r*0.9);
+      grd.addColorStop(0, `rgba(88,166,255, ${0.25*glow})`);
+      grd.addColorStop(1, `rgba(88,166,255, 0.02)`);
+      ctx2d.fillStyle = grd;
+      ctx2d.beginPath();
+      ctx2d.arc(x, y, r*0.9, 0, Math.PI*2);
+      ctx2d.fill();
+
+      // Center dot
+      ctx2d.beginPath();
+      ctx2d.arc(x, y, Math.max(1.5, 2.5*dpr), 0, Math.PI*2);
+      ctx2d.fillStyle = `rgba(200,220,255, ${0.65 + 0.35*glow})`;
+      ctx2d.fill();
+    }
+
+    // Cursor ring (indicates pressure by thickness)
+    if (state.pointerX != null && state.pointerY != null) {
+      ctx2d.beginPath();
+      ctx2d.arc(state.pointerX, state.pointerY, 16*dpr, 0, Math.PI*2);
+      const thick = (2 + 10*state.pressure) * dpr;
+      ctx2d.lineWidth = thick;
+      ctx2d.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx2d.stroke();
+    }
+  }
+
+  // ---------- Main loop ----------
+  function tick() {
+    computeGrid();
+    updateAudio();
+    draw();
+    requestAnimationFrame(tick);
+  }
+
+  // Init
+  function init() {
+    computeGrid();
+    resize();
+    // default pointer in center so you see glow after start
+    state.pointerX = null; state.pointerY = null;
+
+    // Start loop
+    requestAnimationFrame(tick);
+  }
+  init();
+
+})();
+</script>
+</body>
+</html>
